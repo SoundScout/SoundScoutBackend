@@ -1,11 +1,11 @@
 from rest_framework import serializers
+from django.contrib.auth import authenticate
 from users.models import User, Follow, Artist
-from music.models import Track, TrackFeature, Interaction, ListeningHistory, TrackStatistics
-from playlists.models import Playlist, PlaylistTrack, Recommendation
-from subscriptions.models import Subscription
 
 
-#Basic User Serializer
+# ----------------------------
+# Basic User Serializer
+# ----------------------------
 class UserSerializer(serializers.ModelSerializer):
     profile_picture = serializers.SerializerMethodField()
 
@@ -14,16 +14,21 @@ class UserSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_profile_picture(self, obj):
-        return obj.get_profile_picture()
+        return obj.get_profile_picture() if obj.profile_picture else None
 
-#Follower System
+
+# ----------------------------
+# Follow System
+# ----------------------------
 class FollowSerializer(serializers.ModelSerializer):
     class Meta:
         model = Follow
         fields = '__all__'
 
 
-#Artist Profile Serializer (used by admin/moderators/frontend)
+# ----------------------------
+# Artist Profile (for admin/moderators/front)
+# ----------------------------
 class ArtistSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source='user.email', read_only=True)
     username = serializers.CharField(source='user.username', read_only=True)
@@ -42,30 +47,72 @@ class ArtistSerializer(serializers.ModelSerializer):
             'created_at',
         ]
         read_only_fields = ['status', 'created_at', 'user_email', 'username']
+        ref_name = "UsersArtist"  # ⚠️ To avoid Swagger conflict
 
 
-#Artist Signup Serializer (used by POST /signup/artist/)
-class ArtistSignupSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+# ----------------------------
+# Listener Registration
+# ----------------------------
+class ListenerRegisterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['email', 'username', 'password']
+        extra_kwargs = {'password': {'write_only': True}}
+
+    def create(self, validated_data):
+        user = User.objects.create_user(**validated_data)
+        user.role = 'listener'
+        user.save()
+        return user
+
+
+# ----------------------------
+# Artist Registration (listener + artist profile = pending)
+# ----------------------------
+class ArtistRegisterSerializer(serializers.ModelSerializer):
+    phone_number = serializers.CharField(write_only=True)
+    portfolio_link = serializers.URLField(write_only=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'profile_picture']
+        fields = ['email', 'username', 'password', 'profile_picture', 'phone_number', 'portfolio_link']
+        extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):
+        phone = validated_data.pop('phone_number')
+        portfolio = validated_data.pop('portfolio_link')
+
         user = User.objects.create_user(
             username=validated_data['username'],
             email=validated_data['email'],
             password=validated_data['password'],
-            role='artist',
-            profile_picture=validated_data.get('profile_picture', '')
+            profile_picture=validated_data.get('profile_picture', ''),
+            role='listener'  # will be upgraded upon approval
         )
 
         Artist.objects.create(
             user=user,
             display_name=user.username,
+            phone_number=phone,
+            portfolio_link=portfolio,
             profile_picture=user.profile_picture,
             status='pending'
         )
 
         return user
+
+
+# ----------------------------
+# Login Serializer
+# ----------------------------
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField()
+
+    def validate(self, data):
+        user = authenticate(email=data['email'], password=data['password'])
+        if user and user.is_active:
+            return {'user': user}
+        raise serializers.ValidationError("Invalid email or password")
+
+

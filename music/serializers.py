@@ -1,25 +1,40 @@
 from rest_framework import serializers
-from users.models import User, Follow
 from music.models import Artist, Track, TrackFeature, Interaction, ListeningHistory, TrackStatistics
-from playlists.models import Playlist, PlaylistTrack, Recommendation
-from subscriptions.models import Subscription
+from users.serializers import ArtistSerializer as BaseArtistSerializer
 
-# Music Serializers
-class ArtistSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Artist
-        fields = '__all__'
+# now in this file you can refer to UserArtistSerializer
 
+# ----------------------------
+# Artist (Music App)
+# ----------------------------
+
+class ArtistSerializer(BaseArtistSerializer):
+    class Meta(BaseArtistSerializer.Meta):
+        ref_name = "MusicArtist"
+
+
+# ----------------------------
+# Track
+# ----------------------------
 class TrackSerializer(serializers.ModelSerializer):
     class Meta:
         model = Track
         fields = '__all__'
+        read_only_fields = ['approval_status', 'rejection_reason']
 
+
+# ----------------------------
+# Track Features
+# ----------------------------
 class TrackFeatureSerializer(serializers.ModelSerializer):
     class Meta:
         model = TrackFeature
         fields = '__all__'
 
+
+# ----------------------------
+# Interaction
+# ----------------------------
 class InteractionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Interaction
@@ -30,11 +45,10 @@ class InteractionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Comment text is required for comment interactions.")
         return data
 
-#class CommentSerializer(serializers.ModelSerializer):
-#    class Meta:
-#       model = Comment
-#        fields = '__all__'
 
+# ----------------------------
+# Listening History
+# ----------------------------
 class ListeningHistorySerializer(serializers.ModelSerializer):
     track = TrackSerializer(read_only=True)
 
@@ -42,6 +56,10 @@ class ListeningHistorySerializer(serializers.ModelSerializer):
         model = ListeningHistory
         fields = ['track', 'listened_at']
 
+
+# ----------------------------
+# Track Statistics
+# ----------------------------
 class TrackStatisticsSerializer(serializers.ModelSerializer):
     class Meta:
         model = TrackStatistics

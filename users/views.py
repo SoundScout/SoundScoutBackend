@@ -1,24 +1,32 @@
 from rest_framework import viewsets, generics, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated, AllowAny
 from rest_framework.views import APIView
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from django.shortcuts import get_object_or_404
+from rest_framework_simplejwt.tokens import RefreshToken
+from django_filters.rest_framework import DjangoFilterBackend
+
+from django.contrib.auth import authenticate
 
 from users.models import User, Follow, Artist
 from subscriptions.models import Subscription, SubscriptionPlan
+from users.utils import assign_group
 
 from users.serializers import (
     UserSerializer,
     FollowSerializer,
     ArtistSerializer,
-    ArtistSignupSerializer
+    ListenerRegisterSerializer,
+    ArtistRegisterSerializer,
+    LoginSerializer
 )
 
 import logging
-
-
 logger = logging.getLogger('users')
+
+
 # ----------------------------
 # User CRUD (Used by admin / profile screen)
 # ----------------------------
@@ -26,6 +34,7 @@ class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
+    filter_backends = [DjangoFilterBackend]
 
 
 # ----------------------------
@@ -35,41 +44,66 @@ class FollowViewSet(viewsets.ModelViewSet):
     queryset = Follow.objects.all()
     serializer_class = FollowSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
 
 
 # ----------------------------
-# Artist Signup (creates User + Artist profile with status = pending)
+# Listener Registration
 # ----------------------------
-class ArtistSignupView(generics.CreateAPIView):
-    queryset = User.objects.all()
-    serializer_class = ArtistSignupSerializer
+class ListenerRegisterView(generics.CreateAPIView):
+    serializer_class = ListenerRegisterSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend]
 
-    def create(self, request, *args, **kwargs):
+
+# ----------------------------
+# Artist Registration (listener role + artist profile = pending)
+# ----------------------------
+class ArtistRegisterView(generics.CreateAPIView):
+    serializer_class = ArtistRegisterSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend]
+
+
+# ----------------------------
+# Login View for All Users
+# ----------------------------
+class LoginView(generics.GenericAPIView):
+    serializer_class = LoginSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend]
+
+    def post(self, request):
         serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            return Response({
-                "message": "Artist signup successful. Awaiting approval.",
-                "user_id": user.id,
-                "role": user.role,
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data['user']
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "role": user.role,
+            "user_id": user.id,
+            "email": user.email,
+        })
 
 
 # ----------------------------
-# View All Artists (for moderators/admins only)
+# View All Artists (moderator/admin only)
 # ----------------------------
 class ArtistViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Artist.objects.all()
     serializer_class = ArtistSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
 
 
 # ----------------------------
-# Approve or Reject Artist (by moderators/admins)
+# Approve or Reject Artist (moderator/admin only)
 # ----------------------------
 class ApproveOrRejectArtistView(APIView):
     permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
 
     def post(self, request, artist_id):
         user = request.user
@@ -85,10 +119,10 @@ class ApproveOrRejectArtistView(APIView):
             artist.status = 'approved'
             artist.user.role = 'artist'
             artist.user.save()
+            assign_group(artist.user)               # ← ensure user is moved into the Artist group
             artist.save()
 
-            # Log approval
-            logger.info(f" Artist '{artist.display_name}' (User: {artist.user.email}) approved by {user.email}")
+            logger.info(f"Artist '{artist.display_name}' (User: {artist.user.email}) approved by {user.email}")
 
             if not hasattr(artist, 'subscription'):
                 free_plan = SubscriptionPlan.objects.filter(name='Free').first()
@@ -100,7 +134,7 @@ class ApproveOrRejectArtistView(APIView):
                     )
                     logger.info(f"🆕 Free subscription created for artist '{artist.display_name}'")
                 else:
-                    logger.warning(f"⚠️ Free subscription plan not found during approval of artist '{artist.display_name}'")
+                    logger.warning(f"⚠️ Free subscription plan not found for '{artist.display_name}'")
 
             return Response({"message": "Artist approved and Free subscription created."})
 
@@ -112,9 +146,21 @@ class ApproveOrRejectArtistView(APIView):
             artist.rejection_reason = rejection_reason
             artist.save()
 
-            # Log rejection
-            logger.info(f" Artist '{artist.display_name}' (User: {artist.user.email}) rejected by {user.email}. Reason: {rejection_reason}")
-
+            logger.info(
+                f"Artist '{artist.display_name}' (User: {artist.user.email}) rejected by {user.email}. "
+                f"Reason: {rejection_reason}"
+            )
             return Response({"message": "Artist rejected."})
 
         return Response({"error": "Invalid action. Use 'approve' or 'reject'."}, status=400)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def LogoutView(request):
+    try:
+        refresh_token = request.data["refresh"]
+        token = RefreshToken(refresh_token)
+        token.blacklist()  # ✅ Add token to blacklist table
+        return Response({"message": "Logged out successfully."}, status=200)
+    except Exception as e:
+        return Response({"error": str(e)}, status=400)
